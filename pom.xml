@@ -1,0 +1,205 @@
+<!--<project xmlns="http://maven.apache.org/POM/4.0.0"-->
+<!--         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"-->
+<!--         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">-->
+<!--    <modelVersion>4.0.0</modelVersion>-->
+
+<!--    <groupId>com.example</groupId>-->
+<!--    <artifactId>pdf-collector</artifactId>-->
+<!--    <version>1.0.0</version>-->
+
+<!--    <properties>-->
+<!--        <maven.compiler.release>21</maven.compiler.release>-->
+<!--        <javafx.version>21.0.5</javafx.version>-->
+<!--    </properties>-->
+
+<!--    <dependencies>-->
+<!--        <dependency>-->
+<!--            <groupId>org.openjfx</groupId>-->
+<!--            <artifactId>javafx-controls</artifactId>-->
+<!--            <version>${javafx.version}</version>-->
+<!--        </dependency>-->
+<!--        <dependency>-->
+<!--            <groupId>org.openjfx</groupId>-->
+<!--            <artifactId>javafx-fxml</artifactId>-->
+<!--            <version>${javafx.version}</version>-->
+<!--        </dependency>-->
+<!--    </dependencies>-->
+
+<!--    <build>-->
+<!--        <plugins>-->
+<!--            <plugin>-->
+<!--                <groupId>org.openjfx</groupId>-->
+<!--                <artifactId>javafx-maven-plugin</artifactId>-->
+<!--                <version>0.0.8</version>-->
+<!--                <configuration>-->
+<!--                    <mainClass>com.example.pdfcollector.MainApp</mainClass>-->
+<!--                </configuration>-->
+<!--            </plugin>-->
+<!--        </plugins>-->
+<!--    </build>-->
+<!--</project>-->
+
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.example</groupId>
+    <artifactId>pdf-collector</artifactId>
+    <version>1.0.0</version>
+    <name>PDF Collector JavaFX</name>
+    <packaging>jar</packaging>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+        <!-- Java 21 -->
+        <maven.compiler.release>21</maven.compiler.release>
+
+        <!-- JavaFX 21 -->
+        <javafx.version>21.0.5</javafx.version>
+
+        <!-- Main -->
+        <main.class>com.example.pdfcollector.MainApp</main.class>
+
+        <!-- App metadata -->
+        <app.name>PDFCollector</app.name>
+        <app.vendor>MyCompany</app.vendor>
+
+        <!-- Icon -->
+        <icon.path>${project.basedir}/src/main/resources/icon.ico</icon.path>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.openjfx</groupId>
+            <artifactId>javafx-controls</artifactId>
+            <version>${javafx.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.openjfx</groupId>
+            <artifactId>javafx-fxml</artifactId>
+            <version>${javafx.version}</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+
+            <!-- Compiler Java 21 -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.11.0</version>
+                <configuration>
+                    <release>21</release>
+                </configuration>
+            </plugin>
+
+            <!-- Dev run: mvn javafx:run -->
+            <plugin>
+                <groupId>org.openjfx</groupId>
+                <artifactId>javafx-maven-plugin</artifactId>
+                <version>0.0.8</version>
+                <configuration>
+                    <mainClass>${main.class}</mainClass>
+                </configuration>
+            </plugin>
+
+            <!-- jpackage plugin (executed in profile "package") -->
+            <plugin>
+                <groupId>org.panteleyev</groupId>
+                <artifactId>jpackage-maven-plugin</artifactId>
+                <version>1.7.3</version>
+            </plugin>
+
+        </plugins>
+    </build>
+
+    <!-- Build portable app-image with: mvn -Ppackage clean package -->
+    <profiles>
+        <profile>
+            <id>package</id>
+            <build>
+                <plugins>
+
+                    <!-- 1) jlink => creates target/jlink -->
+                    <plugin>
+                        <groupId>org.openjfx</groupId>
+                        <artifactId>javafx-maven-plugin</artifactId>
+                        <version>0.0.8</version>
+                        <executions>
+                            <execution>
+                                <id>jlink</id>
+                                <phase>package</phase>
+                                <goals>
+                                    <goal>jlink</goal>
+                                </goals>
+                                <configuration>
+                                    <mainClass>${main.class}</mainClass>
+
+                                    <!-- runtime folder name under target/ -->
+                                    <jlinkImageName>jlink</jlinkImageName>
+
+                                    <!-- launcher name inside runtime -->
+                                    <launcher>${app.name}</launcher>
+
+                                    <!-- size optimizations -->
+                                    <stripDebug>true</stripDebug>
+                                    <noHeaderFiles>true</noHeaderFiles>
+                                    <noManPages>true</noManPages>
+                                    <compress>2</compress>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+
+                    <!-- 2) jpackage => uses target/jlink and packages jar from target/ -->
+                    <plugin>
+                        <groupId>org.panteleyev</groupId>
+                        <artifactId>jpackage-maven-plugin</artifactId>
+                        <version>1.7.3</version>
+                        <executions>
+                            <execution>
+                                <id>jpackage</id>
+                                <phase>package</phase>
+                                <goals>
+                                    <goal>jpackage</goal>
+                                </goals>
+                                <configuration>
+                                    <type>APP_IMAGE</type>
+
+                                    <name>${app.name}</name>
+                                    <appVersion>${project.version}</appVersion>
+                                    <vendor>${app.vendor}</vendor>
+
+                                    <!-- minimal runtime created by jlink -->
+                                    <runtimeImage>${project.build.directory}/jlink</runtimeImage>
+
+                                    <!-- Output folder -->
+                                    <destination>${project.build.directory}/app</destination>
+                                    <removeDestination>true</removeDestination>
+
+                                    <!-- IMPORTANT: provide mainJar + input (required by jpackage) -->
+                                    <input>${project.build.directory}</input>
+                                    <mainJar>${project.build.finalName}.jar</mainJar>
+                                    <mainClass>${main.class}</mainClass>
+
+                                    <!-- Windows -->
+                                    <winConsole>false</winConsole>
+
+                                    <!-- Icon -->
+                                    <icon>${icon.path}</icon>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+
+</project>

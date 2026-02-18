@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<?import javafx.geometry.Insets?>
+<?import javafx.scene.control.*?>
+<?import javafx.scene.layout.*?>
+
+<BorderPane xmlns="http://javafx.com/javafx"
+            xmlns:fx="http://javafx.com/fxml"
+            fx:controller="com.example.pdfcollector.PdfCollectorController">
+
+    <top>
+        <VBox spacing="10" BorderPane.alignment="CENTER">
+            <padding>
+                <Insets top="12" right="12" bottom="12" left="12"/>
+            </padding>
+
+            <Label text="Collecter tous les PDF vers un dossier unique (All_Fichier)" style="-fx-font-size: 18px; -fx-font-weight: bold;"/>
+
+            <GridPane hgap="10" vgap="10">
+                <columnConstraints>
+                    <ColumnConstraints percentWidth="15"/>
+                    <ColumnConstraints percentWidth="70"/>
+                    <ColumnConstraints percentWidth="15"/>
+                </columnConstraints>
+
+                <Label text="Source :" GridPane.rowIndex="0" GridPane.columnIndex="0"/>
+                <TextField fx:id="sourceField" promptText="Choisir dossier principal..." GridPane.rowIndex="0" GridPane.columnIndex="1"/>
+                <Button text="Parcourir" onAction="#onBrowseSource" GridPane.rowIndex="0" GridPane.columnIndex="2"/>
+
+                <Label text="Destination :" GridPane.rowIndex="1" GridPane.columnIndex="0"/>
+                <TextField fx:id="destField" promptText="Par défaut: Source/All_Fichier" GridPane.rowIndex="1" GridPane.columnIndex="1"/>
+                <Button text="Parcourir" onAction="#onBrowseDest" GridPane.rowIndex="1" GridPane.columnIndex="2"/>
+            </GridPane>
+
+            <HBox spacing="14">
+                <CheckBox fx:id="sortByDateCheck" text="Trier par date (LastModified)"/>
+                <CheckBox fx:id="validateFastCheck" text="Vérifier PDF corrompu (rapide)"/>
+                <CheckBox fx:id="moveInsteadCopyCheck" text="Déplacer au lieu de copier"/>
+                <CheckBox fx:id="verboseLogCheck" text="Logs détaillés"/>
+            </HBox>
+
+            <HBox spacing="12" alignment="CENTER_LEFT">
+                <Label text="Threads:"/>
+                <Spinner fx:id="threadsSpinner" prefWidth="110"/>
+                <Label text="MAX I/O:"/>
+                <Spinner fx:id="maxIoSpinner" prefWidth="110"/>
+                <Label text="Progress update every:"/>
+                <Spinner fx:id="progressEverySpinner" prefWidth="130"/>
+            </HBox>
+
+            <HBox spacing="10">
+                <Button fx:id="startBtn" text="Démarrer" onAction="#onStart" />
+                <Button fx:id="stopBtn" text="Stop" onAction="#onStop" disable="true"/>
+                <ProgressBar fx:id="progressBar" prefWidth="520" />
+                <Label fx:id="statusLabel" text="Prêt" />
+            </HBox>
+
+        </VBox>
+    </top>
+
+    <center>
+        <VBox spacing="8">
+            <padding>
+                <Insets top="0" right="12" bottom="12" left="12"/>
+            </padding>
+            <Label text="Journal (logs) :" style="-fx-font-weight: bold;"/>
+            <TextArea fx:id="logArea" wrapText="false" editable="false" prefHeight="420"/>
+        </VBox>
+    </center>
+
+</BorderPane>
