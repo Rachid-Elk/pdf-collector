@@ -37,7 +37,7 @@
 
             <HBox spacing="14">
                 <CheckBox fx:id="sortByDateCheck" text="Trier par date (LastModified)"/>
-                <CheckBox fx:id="validateFastCheck" text="Vérifier PDF corrompu (rapide)"/>
+                <CheckBox fx:id="validateFastCheck" text="Vérifier Fichier corrompu (rapide)"/>
                 <CheckBox fx:id="moveInsteadCopyCheck" text="Déplacer au lieu de copier"/>
                 <CheckBox fx:id="verboseLogCheck" text="Logs détaillés"/>
             </HBox>
@@ -52,6 +52,7 @@
             </HBox>
 
             <HBox spacing="10">
+                <Button fx:id="scanBtn" text="Scanner" onAction="#onScan" />
                 <Button fx:id="startBtn" text="Démarrer" onAction="#onStart" />
                 <Button fx:id="stopBtn" text="Stop" onAction="#onStop" disable="true"/>
                 <ProgressBar fx:id="progressBar" prefWidth="520" />
@@ -90,5 +91,8 @@
             <TextArea fx:id="logArea" wrapText="false" editable="false" prefHeight="420"/>
         </VBox>
     </center>
+
+
+
 
 </BorderPane>
