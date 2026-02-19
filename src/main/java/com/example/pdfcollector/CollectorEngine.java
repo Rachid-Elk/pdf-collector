@@ -40,13 +40,14 @@ public class CollectorEngine {
 
         // 1) Scan
         List<Path> pdfs = new ArrayList<>();
+        Set<String> allowed = cfg.extensions();
+
         try (var stream = Files.walk(source)) {
             stream.filter(Files::isRegularFile)
                     .filter(p -> !p.startsWith(dest))
-                    .filter(p -> p.toString().toLowerCase(Locale.ROOT).endsWith(".pdf"))
+                    .filter(p -> allowed.contains(extOf(p)))
                     .forEach(pdfs::add);
         }
-
         // 2) Sort (optional)
         if (cfg.sortByDate()) {
             pdfs.sort(Comparator.comparing(p -> {
@@ -56,7 +57,8 @@ public class CollectorEngine {
         }
 
         int total = pdfs.size();
-        logger.accept("PDF trouvés: " + total);
+        String types = String.join("- ", cfg.extensions());
+        logger.accept("Les fichiers trouvés (" + types + ") : " + total);
         if (total == 0) {
             progress.accept(1.0);
             return new CollectorStats(0, 0, 0, 0, 0L);
@@ -83,13 +85,13 @@ public class CollectorEngine {
                 try {
                     if (isCancelled.getAsBoolean()) return;
 
-                    if (cfg.validateFast() && !looksLikePdfFast(src)) {
+                    String ext = extOf(src);
+                    if (cfg.validateFast() && "pdf".equals(ext) && !looksLikePdfFast(src)) {
                         corrupted.incrementAndGet();
-                        if (cfg.verboseLog()) {
-                            logger.accept("[CORRUPTED] " + src.toAbsolutePath());
-                        }
+                        if (cfg.verboseLog()) logger.accept("[CORRUPTED] " + src.toAbsolutePath());
                         return;
                     }
+
 
                     Path destFile = dest.resolve(src.getFileName());
                     destFile = resolveDuplicate(destFile);
@@ -153,6 +155,11 @@ public class CollectorEngine {
                 failed.get(),
                 totalBytes.get()
         );
+    }
+    private static String extOf(Path p) {
+        String name = p.getFileName().toString().toLowerCase(Locale.ROOT);
+        int dot = name.lastIndexOf('.');
+        return (dot >= 0 && dot < name.length() - 1) ? name.substring(dot + 1) : "";
     }
 
     // Fast corruption check: header %PDF- and EOF marker in last ~2KB

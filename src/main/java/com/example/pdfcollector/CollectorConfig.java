@@ -1,6 +1,9 @@
 package com.example.pdfcollector;
 
+
+
 import java.nio.file.Path;
+import java.util.Set;
 
 public record CollectorConfig(
         Path sourceDir,
@@ -11,5 +14,7 @@ public record CollectorConfig(
         boolean verboseLog,
         int threads,
         int maxIo,
-        int progressEvery
+        int progressEvery,
+        Set<String> extensions   // <-- NEW
 ) { }
+
