@@ -39,6 +39,7 @@ public class PdfCollectorController {
     @FXML private Label statusLabel;
     @FXML private TextArea logArea;
 
+    @FXML private Button scanBtn;
     private Task<CollectorStats> currentTask;
 
     // NEW: only these extensions are used for the run (validated via OK button)
@@ -86,10 +87,10 @@ public class PdfCollectorController {
         statusLabel.setText("Prêt");
         appendLog("CPU logical cores detected: " + cores);
         appendLog("Defaults: threads=" + defaultThreads + " maxIO=" + defaultMaxIo + " progressEvery=" + defaultProgressEvery);
-        appendLog("Validated extensions (default): pdf");
+        //appendLog("Validated extensions (default): pdf");
 
         // OPTIONAL: force OK before Start (uncomment if you want)
-        // startBtn.setDisable(true);
+         startBtn.setDisable(true);
     }
 
     // ======= Extensions buttons (FXML) =======
@@ -163,6 +164,156 @@ public class PdfCollectorController {
             destField.setText(selected.getAbsolutePath());
         }
     }
+    // =======Scanner =======
+    @FXML
+    public void onScan() {
+        if (currentTask != null && currentTask.isRunning()) {
+            appendLog("Une opération est déjà en cours...");
+            return;
+        }
+
+        String srcTxt = sourceField.getText() == null ? "" : sourceField.getText().trim();
+        if (srcTxt.isEmpty()) {
+            showError("Source vide", "Choisis un dossier source.");
+            return;
+        }
+
+        String destTxt = destField.getText() == null ? "" : destField.getText().trim();
+        if (destTxt.isEmpty()) {
+            destTxt = Path.of(srcTxt).resolve("All_Fichier").toString();
+            destField.setText(destTxt);
+        }
+
+        // IMPORTANT: use only validated extensions (OK button)
+        Set<String> exts = validatedExtensions;
+        if (exts == null || exts.isEmpty()) {
+            showError("Extensions non validées", "Clique sur OK pour valider tes choix de types de fichiers.");
+            return;
+        }
+
+        CollectorConfig cfg = new CollectorConfig(
+                Path.of(srcTxt),
+                Path.of(destTxt),
+                sortByDateCheck.isSelected(),
+                validateFastCheck.isSelected(),
+                moveInsteadCopyCheck.isSelected(),
+                verboseLogCheck.isSelected(),
+                threadsSpinner.getValue(),
+                maxIoSpinner.getValue(),
+                progressEverySpinner.getValue(),
+                exts
+        );
+
+        scanBtn.setDisable(true);
+        startBtn.setDisable(true);
+        stopBtn.setDisable(true);
+        progressBar.setProgress(ProgressIndicator.INDETERMINATE_PROGRESS);
+        statusLabel.setText("Scan...");
+
+        // Optional: keep existing logs, or clear
+        // logArea.clear();
+
+        CollectorEngine engine = new CollectorEngine();
+
+        Task<Void> scanTask = new Task<>() {
+            @Override
+            protected Void call() throws Exception {
+
+                // 1) Scan (dry-run): counts + sizes
+                ScanResult r = engine.scan(
+                        cfg,
+                        msg -> Platform.runLater(() -> appendLog(msg)),
+                        this::isCancelled
+                );
+
+                if (isCancelled()) return null;
+
+                // 2) SSD benchmark (writes + reads temp file in destination)
+                //    256MB gives stable results without being too slow
+                BenchmarkResult b = engine.benchmarkSSD(
+                        cfg.destDir(),
+                        256,
+                        msg -> Platform.runLater(() -> appendLog(msg))
+                );
+
+                if (isCancelled()) return null;
+
+                // 3) Estimate time (MB/s) based on benchmark + overhead factor
+                double totalMB = r.totalBytes() / (1024.0 * 1024.0);
+
+                // Overhead: many small files => slower than raw MB/s
+                // You can tune this based on your workload
+                double overheadFactor = 1.35; // 35% overhead (safe default)
+                double effective = Math.max(1.0, b.effectiveMBps() / overheadFactor);
+
+                double seconds = totalMB / effective;
+                long s = (long) Math.ceil(seconds);
+                long hh = s / 3600;
+                long mm = (s % 3600) / 60;
+                long ss = s % 60;
+
+                // 4) Print final scan report on UI thread
+                Platform.runLater(() -> {
+                    String types = String.join(", ", validatedExtensions);
+
+                    appendLog("=== SCAN RESULT ===");
+                    appendLog("Types sélectionnés : " + types);
+                    appendLog("Total fichiers     : " + r.totalFiles());
+                    appendLog(String.format("Taille totale (MB) : %.2f", totalMB));
+                    appendLog("Stats par extension :");
+
+                    r.countByExt().keySet().stream().sorted().forEach(ext -> {
+                        int c = r.countByExt().getOrDefault(ext, 0);
+                        long bytes = r.bytesByExt().getOrDefault(ext, 0L);
+                        double mb = bytes / (1024.0 * 1024.0);
+                        appendLog("  - " + ext + " : " + c + " fichiers, " + String.format("%.2f", mb) + " MB");
+                    });
+
+                    appendLog(String.format("Débit SSD (write/read) : %.0f / %.0f MB/s",
+                            b.writeMBps(), b.readMBps()));
+                    appendLog(String.format("Débit estimé (copy)    : %.0f MB/s (après marge %.2fx)",
+                            effective, overheadFactor));
+                    appendLog(String.format("Estimation du temps    : %02d:%02d:%02d (hh:mm:ss)", hh, mm, ss));
+                });
+
+                return null;
+            }
+        };
+
+        scanTask.setOnSucceeded(e -> {
+            progressBar.setProgress(0);
+            scanBtn.setDisable(false);
+            startBtn.setDisable(false);
+            stopBtn.setDisable(true);
+            statusLabel.setText("Scan terminé ✔");
+        });
+
+        scanTask.setOnFailed(e -> {
+            progressBar.setProgress(0);
+            scanBtn.setDisable(false);
+            startBtn.setDisable(false);
+            stopBtn.setDisable(true);
+
+            appendLog("=== SCAN ERROR ===");
+            Throwable ex = scanTask.getException();
+            appendLog(ex == null ? "Erreur inconnue" : ex.toString());
+            statusLabel.setText("Erreur scan ❌");
+        });
+
+        scanTask.setOnCancelled(e -> {
+            progressBar.setProgress(0);
+            scanBtn.setDisable(false);
+            startBtn.setDisable(false);
+            stopBtn.setDisable(true);
+            appendLog("=== SCAN CANCELLED ===");
+            statusLabel.setText("Scan annulé");
+        });
+
+        Thread t = new Thread(scanTask, "scan-task");
+        t.setDaemon(true);
+        t.start();
+    }
+
 
     // ======= Start/Stop =======
 

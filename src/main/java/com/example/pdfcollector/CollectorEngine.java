@@ -1,5 +1,6 @@
 package com.example.pdfcollector;
 
+import java.io.OutputStream;
 import java.io.RandomAccessFile;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
@@ -213,4 +214,90 @@ public class CollectorEngine {
 
         return candidate;
     }
+//pour Scaner le nombre des fichies
+    public ScanResult scan(CollectorConfig cfg,
+                           java.util.function.Consumer<String> logger,
+                           java.util.function.BooleanSupplier isCancelled) throws Exception {
+
+        var countByExt = new java.util.HashMap<String, Integer>();
+        var bytesByExt = new java.util.HashMap<String, Long>();
+        long totalBytes = 0L;
+        int total = 0;
+
+        var allowed = cfg.extensions();
+        var source = cfg.sourceDir();
+        var dest = cfg.destDir();
+
+        try (var stream = java.nio.file.Files.walk(source)) {
+            for (var it = stream.iterator(); it.hasNext();) {
+                if (isCancelled.getAsBoolean()) break;
+
+                var p = it.next();
+                if (!java.nio.file.Files.isRegularFile(p)) continue;
+                if (p.startsWith(dest)) continue;
+
+                String ext = extOf(p);
+                if (!allowed.contains(ext)) continue;
+
+                total++;
+                countByExt.merge(ext, 1, Integer::sum);
+
+                long sz = safeSize(p);
+                totalBytes += sz;
+                bytesByExt.merge(ext, sz, Long::sum);
+            }
+        }
+
+        logger.accept("Scan terminé: " + total + " fichiers, " + (totalBytes / (1024.0 * 1024.0)) + " MB");
+        return new ScanResult(total, totalBytes, countByExt, bytesByExt);
+    }
+
+
+
+    public BenchmarkResult benchmarkSSD(Path destDir, int sizeMB, java.util.function.Consumer<String> logger) throws Exception {
+        Files.createDirectories(destDir);
+
+        Path temp = destDir.resolve(".benchmark_tmp.bin");
+        byte[] buffer = new byte[1024 * 1024]; // 1MB buffer
+        // remplir buffer une fois (évite optimiser "tout zéro")
+        for (int i = 0; i < buffer.length; i += 4096) buffer[i] = (byte) (i * 31);
+
+        // -------- WRITE --------
+        long startW = System.nanoTime();
+        try (OutputStream os = Files.newOutputStream(temp,
+                StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)) {
+            for (int i = 0; i < sizeMB; i++) {
+                os.write(buffer);
+            }
+            os.flush();
+        }
+        long endW = System.nanoTime();
+        double writeSec = (endW - startW) / 1_000_000_000.0;
+        double writeMBps = sizeMB / Math.max(writeSec, 0.0001);
+
+        // -------- READ --------
+        long startR = System.nanoTime();
+        try (var is = Files.newInputStream(temp, StandardOpenOption.READ)) {
+            int read;
+            while ((read = is.read(buffer)) != -1) { /* consume */ }
+        }
+        long endR = System.nanoTime();
+        double readSec = (endR - startR) / 1_000_000_000.0;
+        double readMBps = sizeMB / Math.max(readSec, 0.0001);
+
+        // cleanup
+        try { Files.deleteIfExists(temp); } catch (Exception ignored) {}
+
+        // Débit effectif (copie = lecture + écriture)
+        double effective = 1.0 / (1.0 / readMBps + 1.0 / writeMBps); // harmonic mean
+
+        if (logger != null) {
+            logger.accept(String.format("Benchmark SSD (%dMB): write=%.0f MB/s, read=%.0f MB/s, effective(copy)=%.0f MB/s",
+                    sizeMB, writeMBps, readMBps, effective));
+        }
+
+        return new BenchmarkResult(writeMBps, readMBps, effective);
+    }
+
+
 }
