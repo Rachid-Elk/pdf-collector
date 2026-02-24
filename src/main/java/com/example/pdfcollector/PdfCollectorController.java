@@ -24,14 +24,16 @@ public class PdfCollectorController {
     @FXML private CheckBox moveInsteadCopyCheck;
     @FXML private CheckBox verboseLogCheck;
 
+    @FXML private CheckBox skipExistingCheck; // NEW
+
     @FXML private Spinner<Integer> threadsSpinner;
     @FXML private Spinner<Integer> maxIoSpinner;
     @FXML private Spinner<Integer> progressEverySpinner;
 
-    // Extensions list + validation UI
     @FXML private ListView<String> extListView;
     @FXML private Label validatedExtLabel;
 
+    @FXML private Button scanBtn;
     @FXML private Button startBtn;
     @FXML private Button stopBtn;
 
@@ -39,80 +41,81 @@ public class PdfCollectorController {
     @FXML private Label statusLabel;
     @FXML private TextArea logArea;
 
-    @FXML private Button scanBtn;
-    private Task<CollectorStats> currentTask;
+    // Table stats scan
+    @FXML private TableView<ExtStatRow> statsTable;
+    @FXML private TableColumn<ExtStatRow, String> colExt;
+    @FXML private TableColumn<ExtStatRow, Integer> colCount;
+    @FXML private TableColumn<ExtStatRow, Double> colSizeMb;
+    @FXML private TableColumn<ExtStatRow, Double> colPercent;
 
-    // NEW: only these extensions are used for the run (validated via OK button)
+    private Task<CollectorStats> currentTask;
     private Set<String> validatedExtensions = Set.of("pdf"); // default
 
     @FXML
     public void initialize() {
         int cores = Runtime.getRuntime().availableProcessors();
 
-        // SSD-friendly defaults
         int defaultThreads = Math.min(32, Math.max(2, cores * 2));
-        int defaultMaxIo = 12; // good default for mixed sizes; user can tune
+        int defaultMaxIo = 12;
         int defaultProgressEvery = 200;
 
         threadsSpinner.setValueFactory(new SpinnerValueFactory.IntegerSpinnerValueFactory(1, 64, defaultThreads));
         maxIoSpinner.setValueFactory(new SpinnerValueFactory.IntegerSpinnerValueFactory(1, 64, defaultMaxIo));
         progressEverySpinner.setValueFactory(new SpinnerValueFactory.IntegerSpinnerValueFactory(1, 5000, defaultProgressEvery));
 
-        // Extensions list (multi-select)
+        // extensions list
         extListView.setItems(FXCollections.observableArrayList(
                 "pdf",
-                "xlsx", "xls",
-                "docx", "doc",
-                "pptx", "ppt",
+                "xlsx","xls",
+                "docx","doc",
+                "pptx","ppt",
                 "csv",
-                "png", "jpg", "jpeg",
+                "png","jpg","jpeg",
                 "txt",
                 "bat",
                 "dump",
                 "zip"
         ));
         extListView.getSelectionModel().setSelectionMode(SelectionMode.MULTIPLE);
-
-        // Default selection in UI: PDF
         extListView.getSelectionModel().clearSelection();
         extListView.getSelectionModel().select("pdf");
 
-        // Default validated selection: PDF
         validatedExtensions = Set.of("pdf");
-        if (validatedExtLabel != null) {
-            validatedExtLabel.setText("Sélection validée : pdf");
-        }
+        validatedExtLabel.setText("Sélection validée : pdf");
 
         progressBar.setProgress(0);
         statusLabel.setText("Prêt");
+
+        // table columns
+        colExt.setCellValueFactory(c -> new javafx.beans.property.SimpleStringProperty(c.getValue().ext()));
+        colCount.setCellValueFactory(c -> new javafx.beans.property.SimpleObjectProperty<>(c.getValue().count()));
+        colSizeMb.setCellValueFactory(c -> new javafx.beans.property.SimpleObjectProperty<>(c.getValue().sizeMb()));
+        colPercent.setCellValueFactory(c -> new javafx.beans.property.SimpleObjectProperty<>(c.getValue().percent()));
+
+        colSizeMb.setCellFactory(tc -> new TableCell<>() {
+            @Override protected void updateItem(Double v, boolean empty) {
+                super.updateItem(v, empty);
+                setText(empty || v == null ? "" : String.format("%.2f", v));
+            }
+        });
+        colPercent.setCellFactory(tc -> new TableCell<>() {
+            @Override protected void updateItem(Double v, boolean empty) {
+                super.updateItem(v, empty);
+                setText(empty || v == null ? "" : String.format("%.1f", v));
+            }
+        });
+
         appendLog("CPU logical cores detected: " + cores);
         appendLog("Defaults: threads=" + defaultThreads + " maxIO=" + defaultMaxIo + " progressEvery=" + defaultProgressEvery);
-        //appendLog("Validated extensions (default): pdf");
-
-        // OPTIONAL: force OK before Start (uncomment if you want)
-         startBtn.setDisable(true);
     }
 
-    // ======= Extensions buttons (FXML) =======
-
-    @FXML
-    public void onSelectAllExt() {
-        extListView.getSelectionModel().selectAll();
-        appendLog("Extensions: SELECT ALL (non validé)");
-    }
-
-    @FXML
-    public void onSelectPdfOnly() {
+    // -------- Extensions UI --------
+    @FXML public void onSelectAllExt() { extListView.getSelectionModel().selectAll(); }
+    @FXML public void onSelectPdfOnly() {
         extListView.getSelectionModel().clearSelection();
         extListView.getSelectionModel().select("pdf");
-        appendLog("Extensions: PDF only (non validé)");
     }
-
-    @FXML
-    public void onClearExt() {
-        extListView.getSelectionModel().clearSelection();
-        appendLog("Extensions: cleared (non validé)");
-    }
+    @FXML public void onClearExt() { extListView.getSelectionModel().clearSelection(); }
 
     @FXML
     public void onValidateExtSelection() {
@@ -128,19 +131,11 @@ public class PdfCollectorController {
         }
 
         validatedExtensions = exts;
-
-        String types = String.join(", ", validatedExtensions);
-        if (validatedExtLabel != null) {
-            validatedExtLabel.setText("Sélection validée : " + types);
-        }
-        appendLog("Extensions VALIDÉES: " + types);
-
-        // OPTIONAL: enable Start only after OK
-        // startBtn.setDisable(false);
+        validatedExtLabel.setText("Sélection validée : " + String.join(", ", validatedExtensions));
+        appendLog("Extensions VALIDÉES: " + String.join(", ", validatedExtensions));
     }
 
-    // ======= Browse buttons =======
-
+    // -------- Browse --------
     @FXML
     public void onBrowseSource() {
         DirectoryChooser chooser = new DirectoryChooser();
@@ -148,8 +143,6 @@ public class PdfCollectorController {
         File selected = chooser.showDialog(startBtn.getScene().getWindow());
         if (selected != null) {
             sourceField.setText(selected.getAbsolutePath());
-
-            // Default dest: source/All_Fichier
             Path src = Path.of(selected.getAbsolutePath());
             destField.setText(src.resolve("All_Fichier").toString());
         }
@@ -160,11 +153,10 @@ public class PdfCollectorController {
         DirectoryChooser chooser = new DirectoryChooser();
         chooser.setTitle("Choisir le dossier destination");
         File selected = chooser.showDialog(startBtn.getScene().getWindow());
-        if (selected != null) {
-            destField.setText(selected.getAbsolutePath());
-        }
+        if (selected != null) destField.setText(selected.getAbsolutePath());
     }
-    // =======Scanner =======
+
+    // -------- SCAN (dry-run + benchmark + estimation) --------
     @FXML
     public void onScan() {
         if (currentTask != null && currentTask.isRunning()) {
@@ -172,22 +164,20 @@ public class PdfCollectorController {
             return;
         }
 
-        String srcTxt = sourceField.getText() == null ? "" : sourceField.getText().trim();
+        String srcTxt = val(sourceField);
         if (srcTxt.isEmpty()) {
             showError("Source vide", "Choisis un dossier source.");
             return;
         }
 
-        String destTxt = destField.getText() == null ? "" : destField.getText().trim();
+        String destTxt = val(destField);
         if (destTxt.isEmpty()) {
             destTxt = Path.of(srcTxt).resolve("All_Fichier").toString();
             destField.setText(destTxt);
         }
 
-        // IMPORTANT: use only validated extensions (OK button)
-        Set<String> exts = validatedExtensions;
-        if (exts == null || exts.isEmpty()) {
-            showError("Extensions non validées", "Clique sur OK pour valider tes choix de types de fichiers.");
+        if (validatedExtensions == null || validatedExtensions.isEmpty()) {
+            showError("Extensions non validées", "Clique sur OK pour valider tes choix.");
             return;
         }
 
@@ -201,7 +191,8 @@ public class PdfCollectorController {
                 threadsSpinner.getValue(),
                 maxIoSpinner.getValue(),
                 progressEverySpinner.getValue(),
-                exts
+                validatedExtensions,
+                skipExistingCheck.isSelected()
         );
 
         scanBtn.setDisable(true);
@@ -210,40 +201,30 @@ public class PdfCollectorController {
         progressBar.setProgress(ProgressIndicator.INDETERMINATE_PROGRESS);
         statusLabel.setText("Scan...");
 
-        // Optional: keep existing logs, or clear
-        // logArea.clear();
-
         CollectorEngine engine = new CollectorEngine();
 
         Task<Void> scanTask = new Task<>() {
             @Override
             protected Void call() throws Exception {
 
-                // 1) Scan (dry-run): counts + sizes
                 ScanResult r = engine.scan(
                         cfg,
                         msg -> Platform.runLater(() -> appendLog(msg)),
                         this::isCancelled
                 );
-
                 if (isCancelled()) return null;
 
-                // 2) SSD benchmark (writes + reads temp file in destination)
-                //    256MB gives stable results without being too slow
                 BenchmarkResult b = engine.benchmarkSSD(
                         cfg.destDir(),
                         256,
                         msg -> Platform.runLater(() -> appendLog(msg))
                 );
-
                 if (isCancelled()) return null;
 
-                // 3) Estimate time (MB/s) based on benchmark + overhead factor
                 double totalMB = r.totalBytes() / (1024.0 * 1024.0);
 
-                // Overhead: many small files => slower than raw MB/s
-                // You can tune this based on your workload
-                double overheadFactor = 1.35; // 35% overhead (safe default)
+                // marge réaliste
+                double overheadFactor = 1.35;
                 double effective = Math.max(1.0, b.effectiveMBps() / overheadFactor);
 
                 double seconds = totalMB / effective;
@@ -252,8 +233,18 @@ public class PdfCollectorController {
                 long mm = (s % 3600) / 60;
                 long ss = s % 60;
 
-                // 4) Print final scan report on UI thread
+                // Table rows
+                var rows = r.countByExt().keySet().stream().sorted().map(ext -> {
+                    int c = r.countByExt().getOrDefault(ext, 0);
+                    long bytes = r.bytesByExt().getOrDefault(ext, 0L);
+                    double mb = bytes / (1024.0 * 1024.0);
+                    double pct = totalMB <= 0 ? 0.0 : (mb * 100.0 / totalMB);
+                    return new ExtStatRow(ext, c, mb, pct);
+                }).toList();
+
                 Platform.runLater(() -> {
+                    statsTable.setItems(FXCollections.observableArrayList(rows));
+
                     String types = String.join(", ", validatedExtensions);
 
                     appendLog("=== SCAN RESULT ===");
@@ -261,18 +252,14 @@ public class PdfCollectorController {
                     appendLog("Total fichiers     : " + r.totalFiles());
                     appendLog(String.format("Taille totale (MB) : %.2f", totalMB));
                     appendLog("Stats par extension :");
+                    rows.forEach(row -> appendLog(
+                            "  - " + row.ext() + " : " + row.count() + " fichiers, " +
+                                    String.format("%.2f", row.sizeMb()) + " MB (" +
+                                    String.format("%.1f", row.percent()) + "%)"
+                    ));
 
-                    r.countByExt().keySet().stream().sorted().forEach(ext -> {
-                        int c = r.countByExt().getOrDefault(ext, 0);
-                        long bytes = r.bytesByExt().getOrDefault(ext, 0L);
-                        double mb = bytes / (1024.0 * 1024.0);
-                        appendLog("  - " + ext + " : " + c + " fichiers, " + String.format("%.2f", mb) + " MB");
-                    });
-
-                    appendLog(String.format("Débit SSD (write/read) : %.0f / %.0f MB/s",
-                            b.writeMBps(), b.readMBps()));
-                    appendLog(String.format("Débit estimé (copy)    : %.0f MB/s (après marge %.2fx)",
-                            effective, overheadFactor));
+                    appendLog(String.format("Débit SSD (write/read) : %.0f / %.0f MB/s", b.writeMBps(), b.readMBps()));
+                    appendLog(String.format("Débit estimé (copy)    : %.0f MB/s (marge %.2fx)", effective, overheadFactor));
                     appendLog(String.format("Estimation du temps    : %02d:%02d:%02d (hh:mm:ss)", hh, mm, ss));
                 });
 
@@ -300,23 +287,12 @@ public class PdfCollectorController {
             statusLabel.setText("Erreur scan ❌");
         });
 
-        scanTask.setOnCancelled(e -> {
-            progressBar.setProgress(0);
-            scanBtn.setDisable(false);
-            startBtn.setDisable(false);
-            stopBtn.setDisable(true);
-            appendLog("=== SCAN CANCELLED ===");
-            statusLabel.setText("Scan annulé");
-        });
-
         Thread t = new Thread(scanTask, "scan-task");
         t.setDaemon(true);
         t.start();
     }
 
-
-    // ======= Start/Stop =======
-
+    // -------- START/STOP (copy/move) --------
     @FXML
     public void onStart() {
         if (currentTask != null && currentTask.isRunning()) {
@@ -324,22 +300,17 @@ public class PdfCollectorController {
             return;
         }
 
-        String srcTxt = sourceField.getText() == null ? "" : sourceField.getText().trim();
-        if (srcTxt.isEmpty()) {
-            showError("Source vide", "Choisis un dossier source.");
-            return;
-        }
+        String srcTxt = val(sourceField);
+        if (srcTxt.isEmpty()) { showError("Source vide", "Choisis un dossier source."); return; }
 
-        String destTxt = destField.getText() == null ? "" : destField.getText().trim();
+        String destTxt = val(destField);
         if (destTxt.isEmpty()) {
             destTxt = Path.of(srcTxt).resolve("All_Fichier").toString();
             destField.setText(destTxt);
         }
 
-        // IMPORTANT: use only validated extensions (OK button)
-        Set<String> exts = validatedExtensions;
-        if (exts == null || exts.isEmpty()) {
-            showError("Extensions non validées", "Clique sur OK pour valider tes choix de types de fichiers.");
+        if (validatedExtensions == null || validatedExtensions.isEmpty()) {
+            showError("Extensions non validées", "Clique sur OK pour valider tes choix.");
             return;
         }
 
@@ -353,22 +324,16 @@ public class PdfCollectorController {
                 threadsSpinner.getValue(),
                 maxIoSpinner.getValue(),
                 progressEverySpinner.getValue(),
-                exts
+                validatedExtensions,
+                skipExistingCheck.isSelected()
         );
 
+        scanBtn.setDisable(true);
         startBtn.setDisable(true);
         stopBtn.setDisable(false);
+
         progressBar.setProgress(0);
         statusLabel.setText("Démarrage...");
-
-        logArea.clear();
-        appendLog("=== START ===");
-        appendLog("source=" + cfg.sourceDir().toAbsolutePath());
-        appendLog("dest=" + cfg.destDir().toAbsolutePath());
-        appendLog("threads=" + cfg.threads() + " maxIO=" + cfg.maxIo() + " progressEvery=" + cfg.progressEvery());
-        appendLog("sortByDate=" + cfg.sortByDate() + " validateFast=" + cfg.validateFast());
-        appendLog("moveInsteadOfCopy=" + cfg.moveInsteadOfCopy() + " verboseLog=" + cfg.verboseLog());
-        appendLog("extensions(validées)=" + cfg.extensions());
 
         CollectorEngine engine = new CollectorEngine();
 
@@ -377,10 +342,7 @@ public class PdfCollectorController {
             protected CollectorStats call() throws Exception {
                 return engine.run(
                         cfg,
-                        p -> {
-                            updateProgress(p, 1.0);
-                            updateMessage("Progress: " + (int) Math.round(p * 100) + "%");
-                        },
+                        p -> { updateProgress(p, 1.0); updateMessage("Progress: " + (int)Math.round(p * 100) + "%"); },
                         msg -> Platform.runLater(() -> appendLog(msg)),
                         this::isCancelled
                 );
@@ -407,10 +369,9 @@ public class PdfCollectorController {
         }
     }
 
-    // ======= End handlers =======
-
     private void onEndOk(CollectorStats st) {
         unbindStatus();
+        scanBtn.setDisable(false);
         startBtn.setDisable(false);
         stopBtn.setDisable(true);
 
@@ -422,21 +383,22 @@ public class PdfCollectorController {
                 : String.join(", ", validatedExtensions);
 
         appendLog("=== DONE ===");
-        appendLog("Types de fichiers   : " + types);
-        appendLog("Total trouvés       : " + types + " -> " + st.totalFound());
-        appendLog("Copiés/Déplacés     : " + st.copiedOrMoved());
+        appendLog("Types de fichiers     : " + types);
+        appendLog("Total trouvés         : " + st.totalFound());
+        appendLog("Copiés/Déplacés       : " + st.copiedOrMoved());
+        appendLog("Ignorés (déjà exist.) : " + st.skipped());
         appendLog("Corrompus (" + types + ") : " + st.corrupted());
         appendLog("Échecs (" + types + ")    : " + st.failed());
-        appendLog("Taille totale       : " + df.format(mb) + " MB");
+        appendLog("Taille totale         : " + df.format(mb) + " MB");
 
         statusLabel.setText("Terminé ✔");
     }
 
     private void onEndFail(Throwable ex) {
         unbindStatus();
+        scanBtn.setDisable(false);
         startBtn.setDisable(false);
         stopBtn.setDisable(true);
-
         appendLog("=== ERROR ===");
         appendLog(ex == null ? "Erreur inconnue" : ex.toString());
         statusLabel.setText("Erreur ❌");
@@ -444,9 +406,9 @@ public class PdfCollectorController {
 
     private void onEndCancelled() {
         unbindStatus();
+        scanBtn.setDisable(false);
         startBtn.setDisable(false);
         stopBtn.setDisable(true);
-
         appendLog("=== CANCELLED ===");
         statusLabel.setText("Arrêté.");
     }
@@ -455,15 +417,10 @@ public class PdfCollectorController {
         try {
             progressBar.progressProperty().unbind();
             statusLabel.textProperty().unbind();
-        } catch (Exception ignored) {
-        }
+        } catch (Exception ignored) {}
     }
 
-    // ======= UI helpers =======
-
-    private void appendLog(String msg) {
-        logArea.appendText(msg + "\n");
-    }
+    private void appendLog(String msg) { logArea.appendText(msg + "\n"); }
 
     private void showError(String title, String msg) {
         Alert a = new Alert(Alert.AlertType.ERROR);
@@ -471,5 +428,9 @@ public class PdfCollectorController {
         a.setHeaderText(title);
         a.setContentText(msg);
         a.showAndWait();
+    }
+
+    private static String val(TextField tf) {
+        return tf.getText() == null ? "" : tf.getText().trim();
     }
 }

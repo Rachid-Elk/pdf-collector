@@ -1,27 +1,20 @@
 package com.example.pdfcollector;
 
 import java.io.OutputStream;
-import java.io.RandomAccessFile;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
-import java.nio.file.attribute.FileTime;
 import java.time.Instant;
 import java.util.*;
-import java.util.Locale;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
 public class CollectorEngine {
 
-    public CollectorStats run(
-            CollectorConfig cfg,
-            Consumer<Double> progress,     // 0..1
-            Consumer<String> logger,
-            BooleanSupplier isCancelled
-    ) throws Exception {
+    public CollectorStats run(CollectorConfig cfg,
+                              Consumer<Double> progress,
+                              Consumer<String> logger,
+                              BooleanSupplier isCancelled) throws Exception {
 
         Objects.requireNonNull(cfg);
         Objects.requireNonNull(progress);
@@ -30,197 +23,149 @@ public class CollectorEngine {
 
         Path source = cfg.sourceDir();
         Path dest = cfg.destDir();
-
-        if (!Files.exists(source) || !Files.isDirectory(source)) {
-            throw new IllegalArgumentException("Source invalide: " + source.toAbsolutePath());
-        }
         Files.createDirectories(dest);
 
-        logger.accept("Scan: " + source.toAbsolutePath());
-        logger.accept("Dest: " + dest.toAbsolutePath());
-
-        // 1) Scan
-        List<Path> pdfs = new ArrayList<>();
+        // 1) Scan fichiers à traiter (selon extensions)
+        List<Path> files = new ArrayList<>();
         Set<String> allowed = cfg.extensions();
 
         try (var stream = Files.walk(source)) {
             stream.filter(Files::isRegularFile)
                     .filter(p -> !p.startsWith(dest))
                     .filter(p -> allowed.contains(extOf(p)))
-                    .forEach(pdfs::add);
-        }
-        // 2) Sort (optional)
-        if (cfg.sortByDate()) {
-            pdfs.sort(Comparator.comparing(p -> {
-                try { return Files.getLastModifiedTime(p); }
-                catch (Exception e) { return FileTime.from(Instant.EPOCH); }
-            }));
+                    .forEach(files::add);
         }
 
-        int total = pdfs.size();
-        String types = String.join("- ", cfg.extensions());
-        logger.accept("Les fichiers trouvés (" + types + ") : " + total);
+        // Tri par date si demandé
+        if (cfg.sortByDate()) {
+            files.sort(Comparator.comparingLong(this::safeLastModified));
+        }
+
+        String types = String.join(", ", allowed);
+        logger.accept("Les fichiers trouvés (types : " + types + ") : " + files.size());
+
+        // 2) Copie / Move en multi-thread avec limite I/O
+        int total = files.size();
         if (total == 0) {
             progress.accept(1.0);
-            return new CollectorStats(0, 0, 0, 0, 0L);
+            return new CollectorStats(0, 0, 0, 0, 0, 0L);
         }
 
-        // Stats
-        AtomicInteger processed = new AtomicInteger(0);
+        int threads = Math.max(1, cfg.threads());
+        int maxIo = Math.max(1, cfg.maxIo());
+        int progressEvery = Math.max(1, cfg.progressEvery());
+
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        Semaphore ioLimiter = new Semaphore(maxIo);
+
+        AtomicInteger done = new AtomicInteger(0);
         AtomicInteger copied = new AtomicInteger(0);
+        AtomicInteger skipped = new AtomicInteger(0);
         AtomicInteger corrupted = new AtomicInteger(0);
         AtomicInteger failed = new AtomicInteger(0);
-        AtomicLong totalBytes = new AtomicLong(0);
+        long[] totalBytes = new long[]{0L};
+        Object bytesLock = new Object();
 
-        ExecutorService pool = Executors.newFixedThreadPool(cfg.threads());
-        Semaphore ioLimiter = new Semaphore(cfg.maxIo());
+        try {
+            List<Future<?>> futures = new ArrayList<>(total);
 
-        List<Future<?>> futures = new ArrayList<>(total);
+            for (Path src : files) {
+                if (isCancelled.getAsBoolean()) break;
 
-        long startNs = System.nanoTime();
-
-        for (Path src : pdfs) {
-            if (isCancelled.getAsBoolean()) break;
-
-            futures.add(pool.submit(() -> {
-                try {
+                futures.add(pool.submit(() -> {
                     if (isCancelled.getAsBoolean()) return;
 
-                    String ext = extOf(src);
-                    if (cfg.validateFast() && "pdf".equals(ext) && !looksLikePdfFast(src)) {
-                        corrupted.incrementAndGet();
-                        if (cfg.verboseLog()) logger.accept("[CORRUPTED] " + src.toAbsolutePath());
-                        return;
-                    }
-
-
-                    Path destFile = dest.resolve(src.getFileName());
-                    destFile = resolveDuplicate(destFile);
-
-                    ioLimiter.acquire();
                     try {
-                        if (isCancelled.getAsBoolean()) return;
+                        ioLimiter.acquire();
 
+                        // Validation rapide PDF uniquement
+                        String ext = extOf(src);
+                        if (cfg.validateFast() && "pdf".equals(ext) && !looksLikePdfFast(src)) {
+                            corrupted.incrementAndGet();
+                            if (cfg.verboseLog()) logger.accept("[CORRUPTED] " + src.toAbsolutePath());
+                            return;
+                        }
+
+                        // Destination aplatie (tout dans All_Fichier)
+                        Path destFile = dest.resolve(src.getFileName().toString());
+
+                        // Copy intelligente: skip si existe déjà même taille, sinon collision -> rename
+                        if (cfg.skipExisting() && Files.exists(destFile)) {
+                            long srcSize = safeSize(src);
+                            long dstSize = safeSize(destFile);
+
+                            if (srcSize > 0 && srcSize == dstSize) {
+                                skipped.incrementAndGet();
+                                if (cfg.verboseLog()) logger.accept("[SKIP] " + src.toAbsolutePath());
+                                return;
+                            } else {
+                                destFile = uniqueName(destFile);
+                            }
+                        } else if (Files.exists(destFile)) {
+                            // si skipExisting désactivé => éviter écrasement quand même
+                            destFile = uniqueName(destFile);
+                        }
+
+                        // Copie / move
                         if (cfg.moveInsteadOfCopy()) {
-                            // MOVE
                             Files.move(src, destFile, StandardCopyOption.REPLACE_EXISTING);
                         } else {
-                            // COPY
                             Files.copy(src, destFile, StandardCopyOption.REPLACE_EXISTING);
                         }
+
+                        copied.incrementAndGet();
+
+                        long sz = safeSize(destFile);
+                        synchronized (bytesLock) {
+                            totalBytes[0] += sz;
+                        }
+
+                        if (cfg.verboseLog()) {
+                            logger.accept("[OK] " + src.toAbsolutePath() + " -> " + destFile.toAbsolutePath());
+                        }
+
+                    } catch (Exception ex) {
+                        failed.incrementAndGet();
+                        logger.accept("[FAIL] " + src.toAbsolutePath() + " : " + ex.getMessage());
                     } finally {
                         ioLimiter.release();
-                    }
 
-                    long size = safeSize(src);
-                    copied.incrementAndGet();
-                    totalBytes.addAndGet(size);
-
-                    if (cfg.verboseLog()) {
-                        logger.accept("[OK] " + src.toAbsolutePath() + " -> " + destFile.toAbsolutePath());
-                    }
-
-                } catch (Exception e) {
-                    failed.incrementAndGet();
-                    logger.accept("[FAIL] " + src.toAbsolutePath() + " | " + e.getMessage());
-                } finally {
-                    int done = processed.incrementAndGet();
-
-                    if (done % cfg.progressEvery() == 0 || done == total) {
-                        progress.accept(done / (double) total);
-                        long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNs);
-                        // log light
-                        if (!cfg.verboseLog()) {
-                            logger.accept("Progress: " + (int)Math.round(done * 100.0 / total) + "% (" + done + "/" + total + ") elapsed=" + elapsedMs + "ms");
+                        int d = done.incrementAndGet();
+                        if (d % progressEvery == 0 || d == total) {
+                            progress.accept(d / (double) total);
+                            if (!cfg.verboseLog()) {
+                                logger.accept("Progress: " + (int) Math.round((d * 100.0) / total) + "% (" + d + "/" + total + ")");
+                            }
                         }
                     }
-                }
-            }));
-        }
+                }));
+            }
 
-        // wait
-        for (Future<?> f : futures) {
-            if (isCancelled.getAsBoolean()) break;
-            try { f.get(); }
-            catch (ExecutionException ignored) { /* already logged */ }
-        }
+            for (Future<?> f : futures) {
+                if (isCancelled.getAsBoolean()) break;
+                try { f.get(); } catch (Exception ignored) {}
+            }
 
-        pool.shutdownNow();
+        } finally {
+            pool.shutdownNow();
+        }
 
         progress.accept(1.0);
 
         return new CollectorStats(
                 total,
                 copied.get(),
+                skipped.get(),
                 corrupted.get(),
                 failed.get(),
-                totalBytes.get()
+                totalBytes[0]
         );
     }
-    private static String extOf(Path p) {
-        String name = p.getFileName().toString().toLowerCase(Locale.ROOT);
-        int dot = name.lastIndexOf('.');
-        return (dot >= 0 && dot < name.length() - 1) ? name.substring(dot + 1) : "";
-    }
 
-    // Fast corruption check: header %PDF- and EOF marker in last ~2KB
-    private static boolean looksLikePdfFast(Path file) {
-        try (RandomAccessFile raf = new RandomAccessFile(file.toFile(), "r")) {
-            long len = raf.length();
-            if (len < 12) return false;
-
-            byte[] head = new byte[5];
-            raf.seek(0);
-            raf.readFully(head);
-            if (!"%PDF-".equals(new String(head, StandardCharsets.US_ASCII))) return false;
-
-            int window = (int) Math.min(2048, len);
-            byte[] tail = new byte[window];
-            raf.seek(len - window);
-            raf.readFully(tail);
-            String tailStr = new String(tail, StandardCharsets.US_ASCII);
-            return tailStr.contains("%%EOF");
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private static long safeSize(Path p) {
-        try { return Files.size(p); }
-        catch (Exception e) { return 0L; }
-    }
-
-    private static Path resolveDuplicate(Path file) throws Exception {
-        // always unique naming to avoid collisions
-        if (!Files.exists(file)) return file;
-
-        String name = file.getFileName().toString();
-        String base = name;
-        String ext = "";
-
-        int dot = name.lastIndexOf('.');
-        if (dot > 0) {
-            base = name.substring(0, dot);
-            ext = name.substring(dot);
-        }
-
-        int i = 1;
-        Path parent = file.getParent();
-        Path candidate;
-        do {
-            candidate = parent.resolve(base + "_" + i + ext);
-            i++;
-        } while (Files.exists(candidate));
-
-        return candidate;
-    }
-//pour Scaner le nombre des fichies
-    public ScanResult scan(CollectorConfig cfg,
-                           java.util.function.Consumer<String> logger,
-                           java.util.function.BooleanSupplier isCancelled) throws Exception {
-
-        var countByExt = new java.util.HashMap<String, Integer>();
-        var bytesByExt = new java.util.HashMap<String, Long>();
+    // ------------------ SCAN (dry run) ------------------
+    public ScanResult scan(CollectorConfig cfg, Consumer<String> logger, BooleanSupplier isCancelled) throws Exception {
+        var countByExt = new HashMap<String, Integer>();
+        var bytesByExt = new HashMap<String, Long>();
         long totalBytes = 0L;
         int total = 0;
 
@@ -228,12 +173,12 @@ public class CollectorEngine {
         var source = cfg.sourceDir();
         var dest = cfg.destDir();
 
-        try (var stream = java.nio.file.Files.walk(source)) {
+        try (var stream = Files.walk(source)) {
             for (var it = stream.iterator(); it.hasNext();) {
                 if (isCancelled.getAsBoolean()) break;
 
                 var p = it.next();
-                if (!java.nio.file.Files.isRegularFile(p)) continue;
+                if (!Files.isRegularFile(p)) continue;
                 if (p.startsWith(dest)) continue;
 
                 String ext = extOf(p);
@@ -248,34 +193,31 @@ public class CollectorEngine {
             }
         }
 
-        logger.accept("Scan terminé: " + total + " fichiers, " + (totalBytes / (1024.0 * 1024.0)) + " MB");
+        String types = String.join(", ", allowed);
+        logger.accept("Les fichiers trouvés (types : " + types + ") : " + total);
+
         return new ScanResult(total, totalBytes, countByExt, bytesByExt);
     }
 
-
-
-    public BenchmarkResult benchmarkSSD(Path destDir, int sizeMB, java.util.function.Consumer<String> logger) throws Exception {
+    // ------------------ SSD benchmark ------------------
+    public BenchmarkResult benchmarkSSD(Path destDir, int sizeMB, Consumer<String> logger) throws Exception {
         Files.createDirectories(destDir);
 
         Path temp = destDir.resolve(".benchmark_tmp.bin");
-        byte[] buffer = new byte[1024 * 1024]; // 1MB buffer
-        // remplir buffer une fois (évite optimiser "tout zéro")
+
+        byte[] buffer = new byte[1024 * 1024]; // 1MB
         for (int i = 0; i < buffer.length; i += 4096) buffer[i] = (byte) (i * 31);
 
-        // -------- WRITE --------
         long startW = System.nanoTime();
         try (OutputStream os = Files.newOutputStream(temp,
                 StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)) {
-            for (int i = 0; i < sizeMB; i++) {
-                os.write(buffer);
-            }
+            for (int i = 0; i < sizeMB; i++) os.write(buffer);
             os.flush();
         }
         long endW = System.nanoTime();
         double writeSec = (endW - startW) / 1_000_000_000.0;
         double writeMBps = sizeMB / Math.max(writeSec, 0.0001);
 
-        // -------- READ --------
         long startR = System.nanoTime();
         try (var is = Files.newInputStream(temp, StandardOpenOption.READ)) {
             int read;
@@ -285,19 +227,58 @@ public class CollectorEngine {
         double readSec = (endR - startR) / 1_000_000_000.0;
         double readMBps = sizeMB / Math.max(readSec, 0.0001);
 
-        // cleanup
         try { Files.deleteIfExists(temp); } catch (Exception ignored) {}
 
-        // Débit effectif (copie = lecture + écriture)
         double effective = 1.0 / (1.0 / readMBps + 1.0 / writeMBps); // harmonic mean
 
         if (logger != null) {
-            logger.accept(String.format("Benchmark SSD (%dMB): write=%.0f MB/s, read=%.0f MB/s, effective(copy)=%.0f MB/s",
-                    sizeMB, writeMBps, readMBps, effective));
+            logger.accept(String.format(
+                    "Benchmark SSD (%dMB): write=%.0f MB/s, read=%.0f MB/s, effective(copy)=%.0f MB/s",
+                    sizeMB, writeMBps, readMBps, effective
+            ));
         }
-
         return new BenchmarkResult(writeMBps, readMBps, effective);
     }
 
+    // ------------------ Helpers ------------------
+    private static String extOf(Path p) {
+        String name = p.getFileName().toString().toLowerCase(Locale.ROOT);
+        int dot = name.lastIndexOf('.');
+        return (dot >= 0 && dot < name.length() - 1) ? name.substring(dot + 1) : "";
+    }
 
+    private static long safeSize(Path p) {
+        try { return Files.size(p); } catch (Exception e) { return 0L; }
+    }
+
+    private long safeLastModified(Path p) {
+        try { return Files.getLastModifiedTime(p).toMillis(); }
+        catch (Exception e) { return Instant.EPOCH.toEpochMilli(); }
+    }
+
+    private static Path uniqueName(Path dest) {
+        String name = dest.getFileName().toString();
+        int dot = name.lastIndexOf('.');
+        String base = (dot >= 0) ? name.substring(0, dot) : name;
+        String ext = (dot >= 0) ? name.substring(dot) : "";
+
+        Path dir = dest.getParent();
+        for (int i = 1; i < 10_000; i++) {
+            Path candidate = dir.resolve(base + " (" + i + ")" + ext);
+            if (!Files.exists(candidate)) return candidate;
+        }
+        return dir.resolve(base + " (" + System.currentTimeMillis() + ")" + ext);
+    }
+
+    private static boolean looksLikePdfFast(Path p) {
+        // fast check: starts with %PDF
+        try (var in = Files.newInputStream(p)) {
+            byte[] head = new byte[4];
+            int n = in.read(head);
+            if (n < 4) return false;
+            return head[0] == '%' && head[1] == 'P' && head[2] == 'D' && head[3] == 'F';
+        } catch (Exception e) {
+            return false;
+        }
+    }
 }
