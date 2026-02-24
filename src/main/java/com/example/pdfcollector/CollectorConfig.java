@@ -1,7 +1,5 @@
 package com.example.pdfcollector;
 
-
-
 import java.nio.file.Path;
 import java.util.Set;
 
@@ -15,6 +13,6 @@ public record CollectorConfig(
         int threads,
         int maxIo,
         int progressEvery,
-        Set<String> extensions   // <-- NEW
+        Set<String> extensions,
+        boolean skipExisting // NEW
 ) { }
-

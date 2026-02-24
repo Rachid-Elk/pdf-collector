@@ -1,6 +1,5 @@
 package com.example.pdfcollector;
 
-
 import java.util.Map;
 
 public record ScanResult(
