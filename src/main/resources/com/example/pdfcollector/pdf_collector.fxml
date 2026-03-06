@@ -6,10 +6,10 @@
 
 <BorderPane xmlns="http://javafx.com/javafx"
             xmlns:fx="http://javafx.com/fxml"
-            fx:controller="com.example.pdfcollector.PdfCollectorController">
-
+            fx:controller="com.example.pdfcollector.PdfCollectorController"
+             prefWidth="1000" prefHeight="750">
     <top>
-        <VBox spacing="10" BorderPane.alignment="CENTER">
+        <VBox spacing="10" BorderPane.alignment="CENTER" prefWidth="810">
             <padding>
                 <Insets top="12" right="12" bottom="12" left="12"/>
             </padding>
